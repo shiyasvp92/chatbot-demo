@@ -10,7 +10,7 @@ var mongoose = require('mongoose');
 var User = mongoose.model('User',{
     name : String,
     email : String,
-    phone: Number,
+    phone: String,
     fake: Boolean
   })
 
@@ -28,7 +28,7 @@ app.get('/bot', function(req, res) {
     res.render('index.ejs');
 });
 
-let user, currentStepQueue, genuine, userSaved, timer = 10 * 1000;
+let user, currentStepQueue, genuine, userSaved, timer = 15 * 1000, queryTimer;
 
 function sendMessage(user, message) {
     io.emit('chat_message', `<strong>${user}: </strong> ${message}`)  
@@ -37,11 +37,15 @@ function sendMessage(user, message) {
 function currentStep() {
     const step = currentStepQueue[0];
 
-    if(step) sendMessage('Agent', `Please enter your ${step}`)
-    else {
-        if(!userSaved) sendMessage('Agent', `Any other queries?`);
-        else confirmMessage();
+    if(step && step !== 'query') sendMessage('Agent', `Please enter your ${step}`)
+    else if(step === 'query'){
+        if(!userSaved) {
+            sendMessage('Agent', `Any other queries?`);
+            onQueryStep();
+        }
+        // else confirmMessage();
     }
+
 }
 
 function onInit() {
@@ -51,7 +55,7 @@ function onInit() {
         phone: null,
         fake: false
     };
-    currentStepQueue = ['name', 'email', 'phone'];
+    currentStepQueue = ['name', 'email', 'phone', 'query'];
     genuine = false;
     userSaved = false;
 }
@@ -61,9 +65,6 @@ function onMessage(step, message) {
     const emailRegex = /([\w\.\-_]+)?\w+@[\w-_]+(\.\w+){1,}/;
     const mobileRegex = /^[6-9](?!\d*(\d)\1{4})\d{9}$/;
 
-    if (message.includes('pricing')) genuine = true;
-    else if (message.includes('free')) genuine = false;
-
     switch (step) {
         case 'email':
             if(!emailRegex.test(message)) fake = true;
@@ -71,10 +72,14 @@ function onMessage(step, message) {
         case 'phone':
             if(!mobileRegex.test(message)) fake = true;
             break;
+        case 'query':
+            if (message.includes('pricing')) genuine = true;
+            else if (message.includes('free')) fake = true;
+            break;
     }
 
-    user[step] = message;
-    if(fake) user[fake] = fake;
+    if(step !== 'query') user[step] = message;
+    if(fake) user.fake = fake;
 }
 
 function saveUser() {
@@ -85,16 +90,42 @@ function saveUser() {
 
     var userModel = new User(user);
     userModel.save((err) =>{
-        if(err) sendMessage('System: ', 'Something went wrong');
+        if(err){
+            console.log(err);
+            sendMessage('System: ', 'Something went wrong');
+        }
+
+        confirmMessage();
+
+        sendMessage('Agent: ', 'Thanks for contacting, have a nice day');
+        onInit();
     })
 
     userSaved = true;
-    console.log('User saved, ', user);
 }
 
 function confirmMessage() {
     if(user.fake) sendMessage('Agent: ', 'A team member will call you soon');
     else sendMessage('Agent: ', 'A team member will call you in 10 minutes');
+}
+
+function onQueryStep() {
+    if(!queryTimer) {
+        console.log('timer starts...');
+        queryTimer = setTimeout(function() {
+            user.fake = true;
+    
+            sendMessage('System: ', 'Time out...')
+            console.log('timed out: ', user);
+            saveUser();
+        }, 20 * 1000)
+    }
+}
+
+function onCompleteSteps(message) {
+    if(queryTimer) clearInterval(queryTimer);
+
+    saveUser();
 }
 
 io.sockets.on('connection', function(socket) {
@@ -119,7 +150,7 @@ io.sockets.on('connection', function(socket) {
 
         const step = currentStepQueue.shift();
         if(step) onMessage(step, message);
-        else saveUser();
+        if(step === 'query') onCompleteSteps(message);
 
         sendMessage('You', message)
         currentStep();
